@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:uuid/uuid.dart';
+import 'dart:math';
 import 'alchemy_data.dart';
 
 class AlchemyGameScreen extends StatefulWidget {
@@ -24,7 +24,10 @@ class WorkspaceItem {
 class _AlchemyGameScreenState extends State<AlchemyGameScreen> {
   final Set<String> _unlockedElements = {};
   final List<WorkspaceItem> _workspaceItems = [];
-  final Uuid _uuid = const Uuid();
+  
+  String _generateUuid() {
+    return '${DateTime.now().millisecondsSinceEpoch}-${Random().nextInt(10000)}';
+  }
 
   @override
   void initState() {
@@ -39,7 +42,7 @@ class _AlchemyGameScreenState extends State<AlchemyGameScreen> {
     setState(() {
       _workspaceItems.add(WorkspaceItem(
         id: elementId,
-        instanceId: _uuid.v4(),
+        instanceId: _generateUuid(),
         position: position,
       ));
     });
@@ -58,48 +61,6 @@ class _AlchemyGameScreenState extends State<AlchemyGameScreen> {
     setState(() {
       _workspaceItems.removeWhere((item) => item.instanceId == instanceId);
     });
-  }
-
-  void _handleCombination(String targetInstanceId, String droppedElementId) {
-    final targetItem = _workspaceItems.firstWhere(
-      (item) => item.instanceId == targetInstanceId,
-      orElse: () => WorkspaceItem(id: '', instanceId: '', position: Offset.zero),
-    );
-
-    if (targetItem.instanceId.isEmpty) return;
-
-    final resultId = getCombinationResult(targetItem.id, droppedElementId);
-
-    if (resultId != null) {
-      // Successful combination!
-      final resultElement = getElementById(resultId);
-      
-      // Remove the target item (the dropped one is handled by the drag end usually, 
-      // but if it was from workspace we need to remove it too. 
-      // However, this method is called when 'accepting' data.
-      // If dragging from inventory, we just remove target and add new.
-      // If dragging from workspace, the 'onDragEnd' or similar logic handles the source removal?
-      // Actually, DragTarget onAccept gives us the data. We need to know if the source was workspace or inventory.
-      
-      // Let's simplify: The data passed during drag will be a custom object containing source info.
-      
-      _removeItem(targetInstanceId);
-      
-      // Add the new item at the target's position
-      _addWorkspaceItem(resultId, targetItem.position);
-
-      // Check if it's a new discovery
-      if (!_unlockedElements.contains(resultId)) {
-        _unlockedElements.add(resultId);
-        _showDiscoveryDialog(resultElement);
-      }
-    } else {
-      // No combination, just stack? Or bounce?
-      // For now, if we drag from inventory, we add it nearby.
-      // If we drag from workspace, it just moves there.
-      // But wait, this method is called inside the Target's onAccept.
-      // If we return false or don't do anything, the drag might just complete.
-    }
   }
 
   void _showDiscoveryDialog(AlchemyElement element) {
@@ -169,20 +130,13 @@ class _AlchemyGameScreenState extends State<AlchemyGameScreen> {
                             item: item,
                             onDragEnd: (details, wasAccepted) {
                               if (!wasAccepted) {
-                                // Update position if dropped on empty space (handled by background target)
-                                // But wait, the background target accepts it.
-                                // We need to calculate local position relative to the stack.
                                 final RenderBox renderBox = context.findRenderObject() as RenderBox;
                                 final localPos = renderBox.globalToLocal(details.offset);
-                                // Adjust for the item size (centering) - assuming 60x60 item
-                                _updateItemPosition(item.instanceId, localPos.translate(-30, -30)); // rough center
+                                _updateItemPosition(item.instanceId, localPos.translate(-30, -30)); 
                               }
                             },
                             onCombine: (sourceId) {
-                              // Handle combination logic
-                              // sourceId is the element ID of the item being dropped ONTO this item
-                              // We need to know if the source was from inventory or workspace to remove it correctly?
-                              // Actually, the DraggableWorkspaceItem's DragTarget onAccept will handle this.
+                              // Logic handled in DraggableWorkspaceItem
                             },
                             onRemove: () => _removeItem(item.instanceId),
                           ),
@@ -194,7 +148,6 @@ class _AlchemyGameScreenState extends State<AlchemyGameScreen> {
               },
               onWillAcceptWithDetails: (details) => true,
               onAcceptWithDetails: (details) {
-                // Dropped on the background (empty space)
                 final data = details.data;
                 final RenderBox renderBox = context.findRenderObject() as RenderBox;
                 final localPos = renderBox.globalToLocal(details.offset);
@@ -202,7 +155,6 @@ class _AlchemyGameScreenState extends State<AlchemyGameScreen> {
                 if (data.sourceType == SourceType.inventory) {
                   _addWorkspaceItem(data.elementId, localPos.translate(-30, -30));
                 } else if (data.sourceType == SourceType.workspace) {
-                  // Moved within workspace
                   _updateItemPosition(data.instanceId!, localPos.translate(-30, -30));
                 }
               },
@@ -267,7 +219,7 @@ enum SourceType { inventory, workspace }
 class DragData {
   final String elementId;
   final SourceType sourceType;
-  final String? instanceId; // Only for workspace items
+  final String? instanceId; 
 
   DragData({required this.elementId, required this.sourceType, this.instanceId});
 }
@@ -352,70 +304,37 @@ class _DraggableWorkspaceItemState extends State<DraggableWorkspaceItem> {
 
     return DragTarget<DragData>(
       onWillAcceptWithDetails: (details) {
-        // Don't accept itself
         if (details.data.instanceId == widget.item.instanceId) return false;
         return true;
       },
       onAcceptWithDetails: (details) {
         final droppedData = details.data;
-        
-        // Check for combination
         final result = getCombinationResult(widget.item.id, droppedData.elementId);
         
-        if (result != null) {
-          // We have a match!
-          
-          // 1. If source was workspace, remove it (parent needs to handle this via callback or state)
-          // Actually, the parent handles the state. We need to tell the parent:
-          // "I (target) combined with (source). Remove me, remove source (if workspace), add result."
-          
-          // Since we are inside the item widget, we can't easily modify the parent list directly 
-          // without a callback that handles everything.
-          
-          // Let's use a global event or callback that passes all info.
-          // But wait, we are in a DragTarget.
-          
-          // We need to access the parent state.
-          final parentState = context.findAncestorStateOfType<_AlchemyGameScreenState>();
-          if (parentState != null) {
-            // Remove source if it's from workspace
+        final parentState = context.findAncestorStateOfType<_AlchemyGameScreenState>();
+        if (parentState != null) {
+          if (result != null) {
+            // Combination successful
             if (droppedData.sourceType == SourceType.workspace && droppedData.instanceId != null) {
               parentState._removeItem(droppedData.instanceId!);
             }
-            
-            // Remove target (myself)
             parentState._removeItem(widget.item.instanceId);
-            
-            // Add result
             parentState._addWorkspaceItem(result, widget.item.position);
             
-            // Check discovery
             if (!parentState._unlockedElements.contains(result)) {
               parentState.setState(() {
                 parentState._unlockedElements.add(result);
               });
               parentState._showDiscoveryDialog(getElementById(result));
             }
-          }
-        } else {
-          // No combination.
-          // If source was inventory, maybe we just add it on top?
-          // If source was workspace, it just moves on top.
-          // The background DragTarget might NOT get this event if this target consumes it.
-          // If we want the item to just "move" here without combining, we should probably 
-          // let the background handle it?
-          // But DragTarget consumes the drop.
-          
-          // If we don't combine, we should probably just place the item nearby or on top.
-          final parentState = context.findAncestorStateOfType<_AlchemyGameScreenState>();
-           if (parentState != null) {
-             // Just add/move the item to this location (slightly offset so they don't perfectly overlap)
+          } else {
+            // No combination, just move/add nearby
              if (droppedData.sourceType == SourceType.inventory) {
                parentState._addWorkspaceItem(droppedData.elementId, widget.item.position + const Offset(20, 20));
              } else if (droppedData.sourceType == SourceType.workspace && droppedData.instanceId != null) {
                parentState._updateItemPosition(droppedData.instanceId!, widget.item.position + const Offset(20, 20));
              }
-           }
+          }
         }
       },
       builder: (context, candidateData, rejectedData) {
